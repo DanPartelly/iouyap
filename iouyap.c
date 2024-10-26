@@ -33,8 +33,9 @@
 #include <sys/ioctl.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <linux/if_packet.h>
 #include <arpa/inet.h>
-#include <netpacket/packet.h>
+// #include <netpacket/packet.h>
 #if HAVE_NETINET_IF_ETHER_H && !HAVE_LINUX_IF_TUN_H
 #include <net/ethernet.h>
 #endif
@@ -56,6 +57,7 @@
 #include "iouyap.h"
 #include "netmap.h"
 #include "config.h"
+#include "ancillary.h"
 
 
 extern char *program_invocation_short_name;
@@ -385,6 +387,77 @@ write_pcap_frame (int fd, const unsigned char *packet, size_t len,
 }
 
 
+static ssize_t linux_raw_recv(int sfd, void *pkt, size_t max_len)
+{
+#ifdef PACKET_AUXDATA
+
+#ifdef TP_STATUS_VLAN_TPID_VALID
+# define VLAN_TPID(hdr, hv)     (((hv)->tp_vlan_tpid || ((hdr)->tp_status & TP_STATUS_VLAN_TPID_VALID)) ? (hv)->tp_vlan_tpid : ETH_P_8021Q)
+#else
+# define VLAN_TPID(hdr, hv)     ETH_P_8021Q
+#endif
+
+    ssize_t received;
+    struct iovec iov;
+    struct cmsghdr *cmsg;
+    struct msghdr msg;
+    struct sockaddr from;
+    union {
+      struct cmsghdr  cmsg;
+      char    buf[CMSG_SPACE(sizeof(struct tpacket_auxdata))];
+    } cmsg_buf;
+
+
+    memset(&msg, 0, sizeof(msg));
+    memset(&cmsg_buf, 0, sizeof(cmsg_buf));
+
+    msg.msg_name = &from;
+    msg.msg_namelen  = sizeof(from);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = &cmsg_buf;
+    msg.msg_controllen = sizeof(cmsg_buf);
+    msg.msg_flags = 0;
+    iov.iov_len = max_len - VLAN_HEADER_LEN;
+    iov.iov_base = pkt;
+
+    received = recvmsg(sfd, &msg, MSG_TRUNC);
+    if (received > 0) {
+
+       /* Code mostly copied from libpcap to reconstruct VLAN header */
+       for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+           struct tpacket_auxdata *aux;
+           vlan_tag_t *tag;
+
+           if (cmsg->cmsg_len >= CMSG_LEN(sizeof(struct tpacket_auxdata)) && cmsg->cmsg_level == SOL_PACKET && cmsg->cmsg_type == PACKET_AUXDATA) {
+                aux = (struct tpacket_auxdata *)CMSG_DATA(cmsg);
+#if defined(TP_STATUS_VLAN_VALID)
+                if ((aux->tp_vlan_tci == 0) && !(aux->tp_status & TP_STATUS_VLAN_VALID))
+#else
+                /* this is ambigious but without the TP_STATUS_VLAN_VALID flag,
+                   there is nothing that we can do */
+                if (aux->tp_vlan_tci == 0)
+#endif
+                   continue;
+
+                /* VLAN tag found. Shift MAC addresses down and insert VLAN tag */
+                memmove((unsigned char *)pkt + ETH_ALEN * 2 + VLAN_HEADER_LEN,
+                        (unsigned char *)pkt + ETH_ALEN * 2,
+                        received - ETH_ALEN * 2);
+                received += VLAN_HEADER_LEN;
+                tag = (vlan_tag_t *)((unsigned char *)pkt + ETH_ALEN * 2);
+                tag->vlan_tp_id = htons(VLAN_TPID(aux,aux));
+                tag->vlan_tci = htons(aux->tp_vlan_tci);
+            }
+       }
+    }
+    return (received);
+#else
+    return (recv(nio_linux_raw->fd, pkt, max_len, 0));
+#endif
+}
+
+
 static void *
 foreign_listener (void *arg)
 {
@@ -406,7 +479,8 @@ foreign_listener (void *arg)
   for (;;)
     {
       /* Put received bytes after the (absent) IOU header */
-      bytes_received = read (port->sfd, &buf[IOU_HDR_SIZE], MAX_MTU);
+      bytes_received = linux_raw_recv(port->sfd, &buf[IOU_HDR_SIZE], MAX_MTU);
+      // bytes_received = read (port->sfd, &buf[IOU_HDR_SIZE], MAX_MTU);
 
       if (bytes_received <= 0)
         {
@@ -565,9 +639,17 @@ iou_listener (void *arg)
                             port_table[port].pcap_linktype);
         }
 
+      struct sockaddr_ll sa;
+      memset(&sa,0,sizeof(struct sockaddr_ll));
+      sa.sll_family = AF_PACKET;
+      sa.sll_protocol = htons(ETH_P_ALL);   
+      sa.sll_ifindex = port_table[port].ifindex;
 
-      bytes_sent = write (port_table[port].sfd, &buf[IOU_HDR_SIZE],
-                          bytes_received);
+      bytes_sent = sendto(port_table[port].sfd, &buf[IOU_HDR_SIZE], bytes_received, 0, \
+              (struct sockaddr *)&sa, sizeof(sa));
+
+      // bytes_sent = write (port_table[port].sfd, &buf[IOU_HDR_SIZE],
+      //                    bytes_received);
 
       if (bytes_sent != bytes_received)
         {
@@ -665,7 +747,11 @@ open_eth_dev (foreign_port_t * port, char *dev)
   /* bind */
   memset (&sa, 0, sizeof sa);
   sa.sll_family = AF_PACKET;
+  sa.sll_protocol = htons(ETH_P_ALL);
+  sa.sll_hatype = ARPHRD_ETHER;
+  sa.sll_halen = ETH_ALEN;
   sa.sll_ifindex = ifr.ifr_ifindex;
+
   if (bind (sfd, (struct sockaddr *) &sa, sizeof sa) == -1)
     fatal_error ("bind");
 
@@ -675,11 +761,21 @@ open_eth_dev (foreign_port_t * port, char *dev)
   mreq.mr_type = PACKET_MR_PROMISC;
   if (setsockopt (sfd, SOL_PACKET, PACKET_ADD_MEMBERSHIP,
                   &mreq, sizeof mreq) == -1)
-    fatal_error ("setsockopt");
+    fatal_error ("setsockopt (PACKET_ADD_MEBERSHIP):");
+
+#ifdef PACKET_AUXDATA
+
+   int val = 1;
+   if (setsockopt(sfd, SOL_PACKET, PACKET_AUXDATA, &val, sizeof val) == -1) {
+       fatal_error ("setsockopt (PACKET_AUXDATA):");
+   }
+
+#endif    
 
   if (yap_verbose >= LOG_BASIC)
     log_fmt ("%s opened (sfd=%d)\n", ifr.ifr_name, sfd);
 
+  port->ifindex = ifr.ifr_ifindex;  
   port->sfd = sfd;
 }
 

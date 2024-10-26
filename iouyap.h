@@ -86,16 +86,6 @@
 #define LINKTYPE_FRELAY         107
 #define LINKTYPE_SITA           196     /* for when I add X.25 */
 
-/* Not everyone has UNIX_PATH_MAX */
-#ifndef UNIX_PATH_MAX
-struct sockaddr_un sizecheck;
-#define UNIX_PATH_MAX sizeof(sizecheck.sun_path)
-#endif
-
-/* Not everyone has IFF_MULTI_QUEUE */
-#ifndef IFF_MULTI_QUEUE
-#define IFF_MULTI_QUEUE 0x0100
-#endif
 
 /* Logging levels */
 enum {LOG_QUIET, LOG_BASIC, LOG_EXTENDED, LOG_NOISY, LOG_CRAZY};
@@ -195,8 +185,8 @@ typedef struct
   unsigned char header[IOU_HDR_SIZE];
   int sfd;
   union
-  {
-    struct sockaddr sa;
+  {    
+    struct sockaddr sa;   
     struct sockaddr_in sa_in;
     struct sockaddr_un sa_un;
   };
@@ -208,7 +198,7 @@ typedef struct
 {
   list_head_t *segment;
   int sfd;
-
+  int ifindex;
   int span_sfd;
   int pcap_fd;
   char *pcap_fifo;
@@ -246,6 +236,14 @@ struct pcap_pkthdr {
   u_int32_t caplen;             /* length of portion present */
   u_int32_t len;                /* length this packet (off wire) */
 };
+
+#define VLAN_HEADER_LEN 4
+
+typedef struct {
+    u_int16_t vlan_tp_id;
+    u_int16_t vlan_tci;
+} vlan_tag_t;
+
 
 
 extern int yap_appl_id;
