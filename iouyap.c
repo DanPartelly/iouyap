@@ -453,7 +453,7 @@ static ssize_t raw_recv(int sfd, void *pkt, size_t max_len)
     }
     return (received);
 #else
-    return (recv(nio_linux_raw->fd, pkt, max_len, 0));
+    return (recv(sfd, pkt, max_len, 0));
 #endif
 }
 
