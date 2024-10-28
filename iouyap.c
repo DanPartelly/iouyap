@@ -401,7 +401,7 @@ static ssize_t linux_raw_recv(int sfd, void *pkt, size_t max_len)
     struct iovec iov;
     struct cmsghdr *cmsg;
     struct msghdr msg;
-    struct sockaddr from;
+    struct sockaddr_ll from;
     union {
       struct cmsghdr  cmsg;
       char    buf[CMSG_SPACE(sizeof(struct tpacket_auxdata))];
