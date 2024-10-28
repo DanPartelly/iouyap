@@ -387,7 +387,7 @@ write_pcap_frame (int fd, const unsigned char *packet, size_t len,
 }
 
 
-static ssize_t linux_raw_recv(int sfd, void *pkt, size_t max_len)
+static ssize_t raw_recv(int sfd, void *pkt, size_t max_len)
 {
 #ifdef PACKET_AUXDATA
 
@@ -401,7 +401,7 @@ static ssize_t linux_raw_recv(int sfd, void *pkt, size_t max_len)
     struct iovec iov;
     struct cmsghdr *cmsg;
     struct msghdr msg;
-    struct sockaddr from;
+    struct sockaddr_ll from;
     union {
       struct cmsghdr  cmsg;
       char    buf[CMSG_SPACE(sizeof(struct tpacket_auxdata))];
@@ -453,7 +453,7 @@ static ssize_t linux_raw_recv(int sfd, void *pkt, size_t max_len)
     }
     return (received);
 #else
-    return (recv(nio_linux_raw->fd, pkt, max_len, 0));
+    return (recv(sfd, pkt, max_len, 0));
 #endif
 }
 
@@ -479,7 +479,7 @@ foreign_listener (void *arg)
   for (;;)
     {
       /* Put received bytes after the (absent) IOU header */
-      bytes_received = linux_raw_recv(port->sfd, &buf[IOU_HDR_SIZE], MAX_MTU);
+      bytes_received = raw_recv(port->sfd, &buf[IOU_HDR_SIZE], MAX_MTU);
       // bytes_received = read (port->sfd, &buf[IOU_HDR_SIZE], MAX_MTU);
 
       if (bytes_received <= 0)
