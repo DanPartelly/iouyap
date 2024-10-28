@@ -32,6 +32,10 @@ YFLAGS = -d
 
 LEX = flex
 
+SANITIZERS ?=
+SANITIZER_FLAGS = $(foreach sanitizer,$(SANITIZERS),-fsanitize=$(sanitizer))
+
+
 SRCDIR = .
 
 ifeq ($(SYSTEM_INIPARSER),1)
@@ -39,6 +43,11 @@ ifeq ($(SYSTEM_INIPARSER),1)
 	CFLAGS += -DUSE_SYSTEM_INIPARSER
 else
 	SRCDIR += ,iniparser
+endif
+
+ifeq ($(DEBUG),1)
+	CFLAGS += -fno-omit-frame-pointer -g -O0 $(SANITIZER_FLAGS)
+	LDFLAGS += $(SANITIZER_FLAGS)
 endif
 
 OBJECTS = netmap_parse.o netmap_scan.o netmap.o config.o iouyap.o iniparser/iniparser.o iniparser/dictionary.o
